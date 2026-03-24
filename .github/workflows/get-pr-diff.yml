@@ -20,12 +20,13 @@ jobs:
       - name: Get Port token
         id: port_token
         run: |
-          TOKEN=$(curl -s -X POST "https://api.port.io/v1/auth/access_token" \
+          RESPONSE=$(curl -s -X POST "https://api.port.io/v1/auth/access_token" \
             -H "Content-Type: application/json" \
-            -d '{
-              "clientId": "${{ secrets.PORT_CLIENT_ID }}",
-              "clientSecret": "${{ secrets.PORT_CLIENT_SECRET }}"
-            }' | jq -r '.accessToken')
+            -d "{
+              \"clientId\": \"${{ secrets.PORT_CLIENT_ID }}\",
+              \"clientSecret\": \"${{ secrets.PORT_CLIENT_SECRET }}\"
+            }")
+          TOKEN=$(echo $RESPONSE | jq -r '.accessToken')
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Get PR diff
@@ -35,23 +36,35 @@ jobs:
         run: |
           OWNER=$(echo "${{ github.event.inputs.repo }}" | cut -d'/' -f1)
           REPO=$(echo "${{ github.event.inputs.repo }}" | cut -d'/' -f2)
-
           DIFF=$(gh pr diff ${{ github.event.inputs.pr }} --repo "$OWNER/$REPO" | head -c 8000)
-
-          # Escapar el diff para JSON
-          DIFF_ESCAPED=$(echo "$DIFF" | jq -Rs .)
-          echo "diff=$DIFF_ESCAPED" >> $GITHUB_OUTPUT
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Invoke Port agent
+        env:
+          PORT_TOKEN: ${{ steps.port_token.outputs.token }}
+          DIFF: ${{ steps.pr_diff.outputs.diff }}
+          ENTITY_ID: ${{ github.event.inputs.entity_identifier }}
+          PR_NUMBER: ${{ github.event.inputs.pr }}
+          REPO: ${{ github.event.inputs.repo }}
         run: |
-          curl -X POST "https://api.port.io/v1/agent/pr_review_assistant/invoke" \
-            -H "Authorization: Bearer ${{ steps.port_token.outputs.token }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"prompt\": \"Analyze pull request with entity identifier '${{ github.event.inputs.entity_identifier }}'. Here is the code diff:\n\n${{ steps.pr_diff.outputs.diff }}\",
-              \"labels\": {
-                \"source\": \"Automation\",
-                \"prNumber\": \"${{ github.event.inputs.pr }}\",
-                \"repo\": \"${{ github.event.inputs.repo }}\"
+          PROMPT="Analyze pull request with entity identifier '${ENTITY_ID}'. Here is the code diff:\n\n${DIFF}"
+
+          BODY=$(jq -n \
+            --arg prompt "$PROMPT" \
+            --arg prNumber "$PR_NUMBER" \
+            --arg repo "$REPO" \
+            '{
+              prompt: $prompt,
+              labels: {
+                source: "Automation",
+                prNumber: $prNumber,
+                repo: $repo
               }
-            }"
+            }')
+
+          curl -s -X POST "https://api.port.io/v1/agent/pr_review_assistant/invoke" \
+            -H "Authorization: Bearer $PORT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY"
