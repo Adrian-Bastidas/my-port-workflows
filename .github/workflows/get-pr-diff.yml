@@ -14,24 +14,41 @@ on:
         type: string
 
 jobs:
-  get-diff:
+  get-diff-and-invoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Get PR diff and invoke agent
+      - name: Get Port token
+        id: port_token
+        run: |
+          TOKEN=$(curl -s -X POST "https://api.port.io/v1/auth/access_token" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "clientId": "${{ secrets.PORT_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.PORT_CLIENT_SECRET }}"
+            }' | jq -r '.accessToken')
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Get PR diff
+        id: pr_diff
         env:
           GITHUB_TOKEN: ${{ secrets.COMMENT_ON_PR_TOKEN }}
-          PORT_TOKEN: ${{ secrets.PORT_TOKEN }}
         run: |
           OWNER=$(echo "${{ github.event.inputs.repo }}" | cut -d'/' -f1)
           REPO=$(echo "${{ github.event.inputs.repo }}" | cut -d'/' -f2)
 
           DIFF=$(gh pr diff ${{ github.event.inputs.pr }} --repo "$OWNER/$REPO" | head -c 8000)
 
+          # Escapar el diff para JSON
+          DIFF_ESCAPED=$(echo "$DIFF" | jq -Rs .)
+          echo "diff=$DIFF_ESCAPED" >> $GITHUB_OUTPUT
+
+      - name: Invoke Port agent
+        run: |
           curl -X POST "https://api.port.io/v1/agent/pr_review_assistant/invoke" \
-            -H "Authorization: Bearer $PORT_TOKEN" \
+            -H "Authorization: Bearer ${{ steps.port_token.outputs.token }}" \
             -H "Content-Type: application/json" \
             -d "{
-              \"prompt\": \"Analyze pull request with entity identifier '${{ github.event.inputs.entity_identifier }}'. Here is the code diff:\n\n$DIFF\",
+              \"prompt\": \"Analyze pull request with entity identifier '${{ github.event.inputs.entity_identifier }}'. Here is the code diff:\n\n${{ steps.pr_diff.outputs.diff }}\",
               \"labels\": {
                 \"source\": \"Automation\",
                 \"prNumber\": \"${{ github.event.inputs.pr }}\",
